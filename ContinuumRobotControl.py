@@ -62,13 +62,14 @@ from datetime import datetime
 
 
 class PID2DController:
-    def __init__(self, Kp, Ki, Kd):
+    def __init__(self, Kp, Ki, Kd, integral_limit=0.05):
         self.Kp = np.array(Kp)
         self.Ki = np.array(Ki)
         self.Kd = np.array(Kd)
         self.integral_error = np.zeros(2)
         self.prev_error = np.zeros(2)
         self.initialized = False
+        self.integral_limit = integral_limit  # maximum magnitude of integral term
 
     def reset(self):
         self.integral_error = np.zeros(2)
@@ -84,9 +85,12 @@ class PID2DController:
             self.prev_error = error
             self.initialized = True
 
-        # Integral and derivative terms
-        self.integral_error += error * dt
+        # Compute derivative term
         derivative_error = (error - self.prev_error) / dt if dt > 0 else np.zeros(2)
+
+        # Update integral with anti-windup clamp
+        self.integral_error += error * dt
+        self.integral_error = np.clip(self.integral_error, -self.integral_limit, self.integral_limit)
 
         # PID output
         output = (self.Kp * error +
@@ -113,7 +117,7 @@ class ContinuumRobotController:
         self.targetPose = np.array([0.0, 0.0])
         self.StartTime= 0
 
-        self.pid = PID2DController(Kp=[100.0, 100.0], Ki=[1, 1], Kd=[0.05, 0.05])
+        self.pid = PID2DController(Kp=[100.0, 100.0], Ki=[1, 1], Kd=[0.05, 0.05], integral_limit = 100)
 
     def updateTarget(self, targetPose): # function to set the controller reference position
         with self._lock:
@@ -299,17 +303,23 @@ kp_slider.setValue(1.0)
 ki_slider = QtWidgets.QDoubleSpinBox()
 ki_slider.setRange(0, 10000)
 ki_slider.setSingleStep(0.01)
-ki_slider.setValue(1400.0)
+ki_slider.setValue(1000.0)
 
 kd_slider = QtWidgets.QDoubleSpinBox()
 kd_slider.setRange(0, 10000)
 kd_slider.setSingleStep(0.001)
 kd_slider.setValue(0.01)
 
+kiLimit_slider = QtWidgets.QDoubleSpinBox()
+kiLimit_slider.setRange(0, 10000)
+kiLimit_slider.setSingleStep(.001)
+kiLimit_slider.setValue(.020)
+
 # Add to layout
 gain_layout.addRow("Kp", kp_slider)
 gain_layout.addRow("Ki", ki_slider)
 gain_layout.addRow("Kd", kd_slider)
+gain_layout.addRow("Ki_Limit", kiLimit_slider)
 
 gain_win.setLayout(gain_layout)
 gain_win.setWindowTitle("PID Gain Tuning")
@@ -319,13 +329,19 @@ def update_pid_gains():
     new_kp = kp_slider.value()
     new_ki = ki_slider.value()
     new_kd = kd_slider.value()
+    new_kiLimit= kiLimit_slider.value()
+
     Controller.pid.Kp[:] = [new_kp, new_kp]
     Controller.pid.Ki[:] = [new_ki, new_ki]
     Controller.pid.Kd[:] = [new_kd, new_kd]
+    Controller.pid.integral_limit = new_kiLimit
+
+update_pid_gains()
 
 kp_slider.valueChanged.connect(update_pid_gains)
 ki_slider.valueChanged.connect(update_pid_gains)
 kd_slider.valueChanged.connect(update_pid_gains)
+kiLimit_slider.valueChanged.connect(update_pid_gains)
 
 #######################################
 ## saving data
