@@ -45,11 +45,57 @@ import sys
 import time
 import threading
 from collections import deque
+import math
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+import pyqtgraph as pg
+from PyQt5 import QtWidgets, QtCore
+
+###################################
+# PID Class
+###################################
+
+
+class PID2DController:
+    def __init__(self, Kp, Ki, Kd):
+        self.Kp = np.array(Kp)
+        self.Ki = np.array(Ki)
+        self.Kd = np.array(Kd)
+        self.integral_error = np.zeros(2)
+        self.prev_error = np.zeros(2)
+        self.initialized = False
+
+    def reset(self):
+        self.integral_error = np.zeros(2)
+        self.prev_error = np.zeros(2)
+        self.initialized = False
+
+    def compute(self, X, Xr, dt):
+        x, y = X[:2]
+        xr, yr = Xr[:2]
+        error = np.array([xr - x, yr - y])
+
+        if not self.initialized:
+            self.prev_error = error
+            self.initialized = True
+
+        # Integral and derivative terms
+        self.integral_error += error * dt
+        derivative_error = (error - self.prev_error) / dt if dt > 0 else np.zeros(2)
+
+        # PID output
+        output = (self.Kp * error +
+                  self.Ki * self.integral_error +
+                  self.Kd * derivative_error)
+
+        self.prev_error = error
+
+        return np.array([output[0], output[1], 1.0])
 
 ###################################
 # Controller Class
 ###################################
-
 class ContinuumRobotController:
     def __init__(self, numRegulators=3, maxP = 35, RB_bufferSize=500):
 
@@ -60,7 +106,7 @@ class ContinuumRobotController:
         self._running = False
         self._lock = threading.Lock()
 
-        self.targetPose = [0.0, 0.0, 0.0]
+        self.targetPose = np.array([0.0, 0.0])
         self.StartTime= 0
 
     def updateTarget(self, targetPose): # function to set the controller reference position
@@ -68,21 +114,49 @@ class ContinuumRobotController:
             self.targetPose= targetPose
     
     def ControllerThread(self): # Controller thread--> this is where you should put your MPC controller
+
+        #set up PID controller
+        pid = PID2DController(Kp=[1000.0, 1000.0], Ki=[10, 10], Kd=[0.05, 0.05])
+
+        #jacobian of sorts
+        J = np.array([[0, np.cos(-math.pi/6), np.cos(-5*math.pi/6)],
+                     [1, np.sin(-math.pi/6), np.sin(-5*math.pi/6)],
+                     [1,1,1]])
+
+        Jinv = np.linalg.inv(J)
+
+        prevTime = time.time_ns()/1e9- self.StartTime
+
         while self._running:
             with self._lock: # lock to avoid two threads trying to access the same data at the same time
                 if self.rigid_body_positions:
                     latest_pose = self.rigid_body_positions[-1] # gets the lastest rigid body poses
-            now = time.time_ns()/1e9- self.StartTime # gets the time since the controller thread was started
+                
+            #project to X-Z plane
+            X = np.array([latest_pose[0], latest_pose[2]])
 
-            ######################################################
-            # your controller goes here
-            ######################################################
-            time.sleep(.02)#simulate computer thinking --> REMOVE ME
+            # measure times 
+            now = time.time_ns()/1e9- self.StartTime # gets the time since the controller thread was started
+            dt = now-prevTime
+            prevTime = now
+
+            # get homogeneous input coordinates
+            u = pid.compute(X, self.targetPose,dt)
+
+            # convert homogeneous input coordinates to pressures with Jinf
+            P = Jinv @ u
+
+            time.sleep(.001)#lets not murder the CPU
 
             with self._lock:
-                self.PressureSetPoints = [self.constrainP(0),self.constrainP(30),self.constrainP(30)] # assign regulator pressures
+                self.PressureSetPoints = [self.constrainP(P[0]),self.constrainP(P[1]),self.constrainP(P[2])] # assign regulator pressures
 
-            
+    def getMetrics(self):
+        with self._lock:
+            latest_pose = self.rigid_body_positions[-1] if self.rigid_body_positions else np.zeros(3)
+            Target = self.targetPose
+            Pvals = self.PressureSetPoints
+        return Target, latest_pose, Pvals
 
     def constrainP(self,p): # helper function to ensure pressures are within safe limits
         return min(self.maxP, max(0,p))             
@@ -148,7 +222,7 @@ class ContinuumRobotController:
 ###########################################
 
 #start Serial Coms
-communicator = SerialCommunicator(port="COM12",
+communicator = SerialCommunicator(port="COM13",
                                 baudrate=115200,
                                 n_floats_to_arduino=3,
                                 n_floats_from_arduino=3,
@@ -157,7 +231,7 @@ communicator = SerialCommunicator(port="COM12",
                                 direction = 'OneWay2Arduino',
                                 logFreq=True,
                                 CSVPath = None,
-                                DesiredFreq=100)
+                                DesiredFreq=200)
 communicator.start()
 
 #start Controller thread
@@ -165,42 +239,123 @@ Controller =ContinuumRobotController(numRegulators=3,maxP=35)
 Controller.updateTarget([0.0, 0.0, 0.0]) #start target position
 Controller.start()
 
-freq = 50 # desired frequency of how often the regulator pressures are changed
+freq = 100 # desired frequency of how often the regulator pressures are changed
 
-lastTime = time.perf_counter()
-dt_history = deque(maxlen=100)
-loop_counter = 0
 
-###########################################
-# MAIN LOOP
-###########################################
-try:
-    while True:
+#######################################
+## Real time visualization
+######################################
+
+app = QtWidgets.QApplication([])
+win = pg.GraphicsLayoutWidget(title="Continuum Robot Real-Time Visualization")
+plot = win.addPlot(title="X-Z Plane: Target vs Robot Pose")
+plot.setXRange(-.10, .10)
+plot.setYRange(-.10, .10)
+plot.setLabel('left', 'Z')
+plot.setLabel('bottom', 'X')
+plot.addLegend()
+
+pose_dot = plot.plot([], [], pen=None, symbol='o', symbolBrush='b', name='Pose')
+target_dot = plot.plot([], [], pen=None, symbol='o', symbolBrush='r', name='Target')
+p_label = pg.TextItem(text='', color='w', anchor=(0, 1))
+plot.addItem(p_label)
+
+def update():
+    try:
+        target, pose, pvals = Controller.getMetrics()
+        x_t, z_t = target[0], target[1]
+        x_r, z_r = pose[0], pose[2]
+        pose_dot.setData([x_r], [z_r])
+        target_dot.setData([x_t], [z_t])
+
+        p_label.setText(f"P1: {pvals[0]:.1f}, P2: {pvals[1]:.1f}, P3: {pvals[2]:.1f}")
+        p_label.setPos(-.095, .095)  # place label at top left of the plot
+
+    except Exception as e:
+        print(f"Update error: {e}")
+
+# Run timer at 20 Hz
+timer = QtCore.QTimer()
+timer.timeout.connect(update)
+timer.start(50)
+
+# Control loop thread
+
+def run_control_loop():
+    lastTime = time.perf_counter()
+    dt_history = deque(maxlen=100)
+    loop_counter = 0
+
+    try:
+        while True:
+            now = time.perf_counter()
+            dt = now - lastTime
+
+            if dt >= 1 / freq:
+                lastTime = now
+                loop_counter += 1
+                dt_history.append(dt)
+                
+                Controller.updateTarget(np.array([
+                    20./1000. * math.cos(now * 2 * math.pi * 0.1),
+                    20./1000. * math.sin(now * 2 * math.pi * 0.1)
+                ]))
+
+                setpoint = Controller.RetrieveControlInput()
+                communicator.set_data_to_send(setpoint)
+
+                if loop_counter % 100 == 0:
+                    avg_dt = sum(dt_history) / len(dt_history)
+                    avg_freq = 1 / avg_dt if avg_dt > 0 else 0
+                    print(f"[Loop Stats] Avg freq: {avg_freq:.2f} Hz")
+            else:
+                time.sleep(0.0005)
+
+    except KeyboardInterrupt:
+        print("\n[Shutdown] KeyboardInterrupt received. Stopping controller and communicator...")
+        Controller.stop()
+        communicator.stop()
+        print("[Shutdown] All threads successfully stopped.")
+
+threading.Thread(target=run_control_loop, daemon=True).start()
+
+win.show()
+QtWidgets.QApplication.instance().exec_()
+
+
+
+
+# ###########################################
+# # MAIN LOOP
+# ###########################################
+# try:
+#     while True:
         
-        now = time.perf_counter()
-        dt = now - lastTime
+#         now = time.perf_counter()
+#         dt = now - lastTime
 
-        if dt >= 1/freq: # Make sure we are operating at freq
+#         if dt >= 1/freq: # Make sure we are operating at freq
 
-            lastTime=now
-            loop_counter += 1
-            dt_history.append(dt)
+#             lastTime=now
+#             loop_counter += 1
+#             dt_history.append(dt)
 
-            Controller.updateTarget([0.0, 0.0, 0.0]) #update target position
+#             Controller.updateTarget(np.array([20*math.cos(now*2*math.pi*.1), 20*math.sin(now*2*math.pi*.1)])) #update target position
+
+#             setpoint = Controller.RetrieveControlInput() 
+#             communicator.set_data_to_send(setpoint) # update regulator setpoints based on most up-to-date input from the controller 
+
+
+#             if loop_counter % 100 == 0: # every 100 loops print average freq
+#                 avg_dt = sum(dt_history) / len(dt_history)
+#                 avg_freq = 1 / avg_dt if avg_dt > 0 else 0
+#                 print(f"[Loop Stats] Avg freq: {avg_freq:.2f} Hz")
             
-            setpoint = Controller.RetrieveControlInput() 
-            communicator.set_data_to_send(setpoint) # update regulator setpoints based on most up-to-date input from the controller 
-        
-            if loop_counter % 100 == 0: # every 100 loops print average freq
-                avg_dt = sum(dt_history) / len(dt_history)
-                avg_freq = 1 / avg_dt if avg_dt > 0 else 0
-                print(f"[Loop Stats] Avg freq: {avg_freq:.2f} Hz")
-            
-        else:
-            time.sleep(.0005)
-            
-except KeyboardInterrupt:
-    print("\n[Shutdown] KeyboardInterrupt received. Stopping controller and communicator...")
-    Controller.stop()
-    communicator.stop()  # Only if your SerialCommunicator supports a stop() method
-    print("[Shutdown] All threads successfully stopped.")
+#         else:
+#             time.sleep(.0005)
+
+# except KeyboardInterrupt:
+#     print("\n[Shutdown] KeyboardInterrupt received. Stopping controller and communicator...")
+#     Controller.stop()
+#     communicator.stop()  # Only if your SerialCommunicator supports a stop() method
+#     print("[Shutdown] All threads successfully stopped.")
