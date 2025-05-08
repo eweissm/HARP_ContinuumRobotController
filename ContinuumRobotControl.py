@@ -51,6 +51,10 @@ import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import pyqtgraph as pg
 from PyQt5 import QtWidgets, QtCore
+from scipy.optimize import lsq_linear
+from svgpathtools import svg2paths
+import csv
+from datetime import datetime
 
 ###################################
 # PID Class
@@ -91,7 +95,7 @@ class PID2DController:
 
         self.prev_error = error
 
-        return np.array([output[0], output[1], 1.0])
+        return np.array([output[0], output[1]])
 
 ###################################
 # Controller Class
@@ -109,6 +113,8 @@ class ContinuumRobotController:
         self.targetPose = np.array([0.0, 0.0])
         self.StartTime= 0
 
+        self.pid = PID2DController(Kp=[100.0, 100.0], Ki=[1, 1], Kd=[0.05, 0.05])
+
     def updateTarget(self, targetPose): # function to set the controller reference position
         with self._lock:
             self.targetPose= targetPose
@@ -116,14 +122,11 @@ class ContinuumRobotController:
     def ControllerThread(self): # Controller thread--> this is where you should put your MPC controller
 
         #set up PID controller
-        pid = PID2DController(Kp=[1000.0, 1000.0], Ki=[10, 10], Kd=[0.05, 0.05])
+        pid = self.pid
 
         #jacobian of sorts
         J = np.array([[0, np.cos(-math.pi/6), np.cos(-5*math.pi/6)],
-                     [1, np.sin(-math.pi/6), np.sin(-5*math.pi/6)],
-                     [1,1,1]])
-
-        Jinv = np.linalg.inv(J)
+                     [1, np.sin(-math.pi/6), np.sin(-5*math.pi/6)]])
 
         prevTime = time.time_ns()/1e9- self.StartTime
 
@@ -140,17 +143,21 @@ class ContinuumRobotController:
             dt = now-prevTime
             prevTime = now
 
-            # get homogeneous input coordinates
+            # get input coordinates
             u = pid.compute(X, self.targetPose,dt)
 
-            # convert homogeneous input coordinates to pressures with Jinf
-            P = Jinv @ u
+            # We need to solve x = J*P where J is 2x3, P is 3x1, x is 2x1. 
+            # P is subject to inequality constraints [0,maxP]
+            #solve as a QP problem
+            result = lsq_linear(J, np.transpose(u), bounds=(0, self.maxP))
 
+            P = result.x 
+         
             time.sleep(.001)#lets not murder the CPU
 
             with self._lock:
                 self.PressureSetPoints = [self.constrainP(P[0]),self.constrainP(P[1]),self.constrainP(P[2])] # assign regulator pressures
-
+               
     def getMetrics(self):
         with self._lock:
             latest_pose = self.rigid_body_positions[-1] if self.rigid_body_positions else np.zeros(3)
@@ -279,12 +286,80 @@ timer = QtCore.QTimer()
 timer.timeout.connect(update)
 timer.start(50)
 
-# Control loop thread
 
+gain_win = QtWidgets.QWidget()
+gain_layout = QtWidgets.QFormLayout()
+
+# Create sliders or spin boxes for each gain
+kp_slider = QtWidgets.QDoubleSpinBox()
+kp_slider.setRange(0, 10000)
+kp_slider.setSingleStep(.5)
+kp_slider.setValue(1.0)
+
+ki_slider = QtWidgets.QDoubleSpinBox()
+ki_slider.setRange(0, 10000)
+ki_slider.setSingleStep(0.01)
+ki_slider.setValue(1400.0)
+
+kd_slider = QtWidgets.QDoubleSpinBox()
+kd_slider.setRange(0, 10000)
+kd_slider.setSingleStep(0.001)
+kd_slider.setValue(0.01)
+
+# Add to layout
+gain_layout.addRow("Kp", kp_slider)
+gain_layout.addRow("Ki", ki_slider)
+gain_layout.addRow("Kd", kd_slider)
+
+gain_win.setLayout(gain_layout)
+gain_win.setWindowTitle("PID Gain Tuning")
+gain_win.show()
+
+def update_pid_gains():
+    new_kp = kp_slider.value()
+    new_ki = ki_slider.value()
+    new_kd = kd_slider.value()
+    Controller.pid.Kp[:] = [new_kp, new_kp]
+    Controller.pid.Ki[:] = [new_ki, new_ki]
+    Controller.pid.Kd[:] = [new_kd, new_kd]
+
+kp_slider.valueChanged.connect(update_pid_gains)
+ki_slider.valueChanged.connect(update_pid_gains)
+kd_slider.valueChanged.connect(update_pid_gains)
+
+#######################################
+## saving data
+########################################
+log_filename = f"C:/Users/eweissm1/Visual Studio Projects/HARP Continuum Robot/RobotData/robot_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+log_file = open(log_filename, mode='w', newline='')
+csv_writer = csv.writer(log_file)
+csv_writer.writerow(['time', 'pose_x', 'pose_z', 'target_x', 'target_z', 'error_x', 'error_z', 'P1', 'P2', 'P3'])
+
+#############################################
+# Control loop thread
+#############################################
 def run_control_loop():
     lastTime = time.perf_counter()
     dt_history = deque(maxlen=100)
     loop_counter = 0
+    tik = time.time()
+    #############################################
+    #Generate Path to track
+    ############################################
+    paths, attributes = svg2paths('C:/Users/eweissm1/Visual Studio Projects/HARP Continuum Robot/RobotLineArt/ASUlogo.svg')
+
+    # Discretize the first path (you can loop through multiple if needed)
+    path = paths[0]
+    Scale = .1/200.0
+    # Sample N points along the path
+    N = 500
+    maxt = 200
+    points = [path.point(t) for t in np.linspace(0, 1, N)]
+    x = [Scale*p.real-.05 for p in points]
+    y = [Scale*p.imag-.05 for p in points]
+    y = [-yi for yi in y]
+    t = np.linspace(2, maxt, N) 
+    
 
     try:
         while True:
@@ -295,14 +370,29 @@ def run_control_loop():
                 lastTime = now
                 loop_counter += 1
                 dt_history.append(dt)
-                
+     
+                idx = np.searchsorted(t, time.time()-tik, side="left")
+
+                # Controller.updateTarget(np.array([ x[idx],y[idx] ]))
+
                 Controller.updateTarget(np.array([
-                    20./1000. * math.cos(now * 2 * math.pi * 0.1),
-                    20./1000. * math.sin(now * 2 * math.pi * 0.1)
+                    40./1000. * math.cos(now * 2 * math.pi * 0.1),
+                    40./1000. * math.sin(now * 2 * math.pi * 0.1)
                 ]))
 
                 setpoint = Controller.RetrieveControlInput()
                 communicator.set_data_to_send(setpoint)
+                
+                target, pose, pvals = Controller.getMetrics()
+                pose_x, pose_z = pose[0], pose[2]
+                target_x, target_z = target[0], target[1]
+                error_x = target_x - pose_x
+                error_z = target_z - pose_z
+                timestamp = time.time() - tik
+
+                # Write to CSV
+                csv_writer.writerow([timestamp, pose_x, pose_z, target_x, target_z, error_x, error_z, *pvals])
+                log_file.flush()  # Ensure data is written immediately
 
                 if loop_counter % 100 == 0:
                     avg_dt = sum(dt_history) / len(dt_history)
@@ -315,6 +405,7 @@ def run_control_loop():
         print("\n[Shutdown] KeyboardInterrupt received. Stopping controller and communicator...")
         Controller.stop()
         communicator.stop()
+        log_file.close()  # Close log file
         print("[Shutdown] All threads successfully stopped.")
 
 threading.Thread(target=run_control_loop, daemon=True).start()
