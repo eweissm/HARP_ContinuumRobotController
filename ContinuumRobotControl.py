@@ -1,39 +1,69 @@
 """
-Continuum Robot Control Script
+===============================================================================
+Continuum Robot Real-Time Control and Visualization System
+===============================================================================
+
 By Eric Weissman
-4/22/2025
+Last Modified: May 13, 2025
 
 Description:
-This script implements a real-time control loop for a pneumatic continuum robot using:
-- NatNet motion capture data for pose estimation (via the OptiTrack system)
-- Serial communication with an Arduino to control pressure regulators
-- A threaded controller class to manage state estimation and compute pressure setpoints
+------------
+This script implements a complete real-time control loop for a pneumatically actuated 
+continuum robot. It integrates the following subsystems:
 
-Key Components:
-- ContinuumRobotController: A threaded class that buffers OptiTrack pose data, tracks a target pose,
-  and updates pressure setpoints accordingly.
-- SerialCommunicator: Custom serial interface for sending pressure setpoints to an Arduino and (optionally)
-  receiving feedback.
+1. **Serial Communication**: Interfaces with an Arduino (or similar microcontroller) 
+   via a custom `SerialCommunicator` class to send computed pressure setpoints and 
+   optionally log feedback values.
 
-Features:
-- Thread-safe access to shared data using Python locks.
-- Uses high-precision timers via `time.perf_counter()` for stable loop timing.
-- Tracks and prints average loop frequency every 100 iterations for performance monitoring.
-- Gracefully shuts down all background threads and serial communication on `KeyboardInterrupt`.
+2. **Motion Capture Integration**: Uses OptiTrack's NatNet SDK (via `NatNetClient`) 
+   to stream rigid body position data for the robot in real-time.
+
+3. **PID Control**: Employs a 2D PID controller (`PID2DController`) to minimize the 
+   pose error between the robot's current tip position and a target trajectory 
+   defined in the X-Z plane.
+
+4. **Pressure Optimization**: Computes optimal pressure values using least-squares 
+   with linear inequality constraints to solve an underdetermined Jacobian mapping.
+
+5. **Trajectory Generation**: Loads and samples a 2D path from an SVG file (e.g., 
+   a logo or character) to produce a time-varying target trajectory.
+
+6. **Visualization**: Displays robot pose and target in real-time using PyQtGraph 
+   with a live-updating plot, as well as a separate UI panel for PID gain tuning 
+   with PyQt5 widgets.
+
+7. **Data Logging**: Records pose, target, error, and actuator pressure data to a 
+   timestamped CSV file for later analysis.
+
+Structure:
+----------
+- `PID2DController`: Encapsulates a basic PID controller in 2D space with anti-windup.
+- `ContinuumRobotController`: Orchestrates pose tracking and pressure computation.
+- `run_control_loop`: Main control loop thread that synchronizes sensor input, 
+  trajectory tracking, control computation, and communication output.
+- `update`: Callback for the visualization plot update.
+- `update_pid_gains`: Reconfigures the PID controller on-the-fly using GUI sliders.
+- `start_natnet_client`: Initializes the OptiTrack client and connects to the server.
 
 Usage:
-1. Connect Arduino to the correct COM port with matching baudrate and protocol.
-2. Ensure OptiTrack streaming is enabled and broadcasting the correct rigid body data.
-3. Run this script. The control loop will:
-    - Read pose data from OptiTrack
-    - Compute pressure setpoints
-    - updates set pressures at a specified frequency (50 Hz)
-    - Send them to the Arduino via serial at 100Hz
-4. Stop the script with Ctrl+C.
+------
+- Ensure OptiTrack Motive and the NatNet server are running.
+- Connect Arduino via the specified COM port.
+- Place an SVG file in the expected directory for trajectory generation.
+- Run this script. The robot will attempt to track the trajectory in real-time, 
+  visualize progress, and log data to a CSV file.
+
+Dependencies:
+-------------
+- `SerialCommunicator.py`, `NatNetClient.py`, `MoCapData.py`, `DataDescriptions.py`
+- Python packages: numpy, scipy, pyqtgraph, PyQt5, svgpathtools, matplotlib, csv
 
 Note:
-- Make sure `SerialCommunicator`, `NatNetClient`, `DataDescriptions`, and `MoCapData` are in the Python path.
-- Adjust frequency (`freq`), COM port, and pressure logic as needed for your application.
+-----
+All threading operations are protected by locks to ensure safe access to shared data.
+To terminate the program cleanly, press `Ctrl+C`.
+
+===============================================================================
 """
 
 #imports
