@@ -105,7 +105,7 @@ class PID2DController:
 # Controller Class
 ###################################
 class ContinuumRobotController:
-    def __init__(self, numRegulators=3, maxP = 35, RB_bufferSize=500):
+    def __init__(self, numRegulators=3, maxP = 30, RB_bufferSize=500):
 
         self.numRegulators= numRegulators
         self.PressureSetPoints = [0.0] * self.numRegulators
@@ -161,6 +161,7 @@ class ContinuumRobotController:
 
             with self._lock:
                 self.PressureSetPoints = [self.constrainP(P[0]),self.constrainP(P[1]),self.constrainP(P[2])] # assign regulator pressures
+                # self.PressureSetPoints = [self.constrainP(20),self.constrainP(0),self.constrainP(0)]
                
     def getMetrics(self):
         with self._lock:
@@ -303,7 +304,7 @@ kp_slider.setValue(1.0)
 ki_slider = QtWidgets.QDoubleSpinBox()
 ki_slider.setRange(0, 10000)
 ki_slider.setSingleStep(0.01)
-ki_slider.setValue(1000.0)
+ki_slider.setValue(1200.0)
 
 kd_slider = QtWidgets.QDoubleSpinBox()
 kd_slider.setRange(0, 10000)
@@ -366,13 +367,13 @@ def run_control_loop():
 
     # Discretize the first path (you can loop through multiple if needed)
     path = paths[0]
-    Scale = .1/200.0
+    Scale = .06/200.0
     # Sample N points along the path
     N = 500
     maxt = 200
     points = [path.point(t) for t in np.linspace(0, 1, N)]
-    x = [Scale*p.real-.05 for p in points]
-    y = [Scale*p.imag-.05 for p in points]
+    x = [Scale*p.real-.03 for p in points]
+    y = [Scale*p.imag-.03 for p in points]
     y = [-yi for yi in y]
     t = np.linspace(2, maxt, N) 
     
@@ -389,12 +390,12 @@ def run_control_loop():
      
                 idx = np.searchsorted(t, time.time()-tik, side="left")
 
-                # Controller.updateTarget(np.array([ x[idx],y[idx] ]))
+                Controller.updateTarget(np.array([ x[idx],y[idx] ]))
 
-                Controller.updateTarget(np.array([
-                    40./1000. * math.cos(now * 2 * math.pi * 0.1),
-                    40./1000. * math.sin(now * 2 * math.pi * 0.1)
-                ]))
+                # Controller.updateTarget(np.array([
+                #     30./1000. * math.cos(now * 2 * math.pi * 0.1),
+                #     30./1000. * math.sin(now * 2 * math.pi * 0.1)
+                # ]))
 
                 setpoint = Controller.RetrieveControlInput()
                 communicator.set_data_to_send(setpoint)
