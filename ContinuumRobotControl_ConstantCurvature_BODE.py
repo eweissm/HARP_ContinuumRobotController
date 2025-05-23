@@ -306,7 +306,7 @@ class ContinuumRobotController:
             # PID for feedback, closing the loop on phi and curvatures
             u, error = pid.compute([phi, curvature], [phi_desired, curvature_desired], dt)
             
-            PIDGAIN= 1
+            PIDGAIN= 0
 
             # Use constant curvature and muscle model to find P with FF controller
             M = self.momentFromCurvature(curvature_desired + PIDGAIN*u[1], phi_desired+ PIDGAIN*u[0], YoungsModulus, CoreDiameter)
@@ -427,7 +427,7 @@ timer.start(50)
 
 
 # #tracking ASU
-DefaultGains= [2.5,1.0, .0, 10000]
+DefaultGains= [2.5,.25, .0, 10000]
 
 #tracking circle
 # DefaultGains= [100.0, 3000.0, .1, .07]
@@ -490,7 +490,7 @@ kiLimit_slider.valueChanged.connect(update_pid_gains)
 log_filename = f"C:/Users/eweissm1/Visual Studio Projects/HARP Continuum Robot/RobotData/robot_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
 log_file = open(log_filename, mode='w', newline='')
 csv_writer = csv.writer(log_file)
-csv_writer.writerow(['time', 'pose_x', 'pose_z', 'target_x', 'target_z', 'error_x', 'error_z', 'P1', 'P2', 'P3'])
+csv_writer.writerow(['time', 'pose_x', 'pose_z', 'target_x', 'target_z', 'error_x', 'error_z', 'P1', 'P2', 'P3', 'freq'])
 
 #############################################
 # Control loop thread
@@ -518,62 +518,71 @@ def run_control_loop():
     t = np.linspace(2, maxt, N) 
     
 
+    
+    frequencies = np.arange(0.1, 10.1, 0.1)  # Frequencies from 0.1 to 10.0 Hz
+
     try:
-        while True:
-            now = time.perf_counter()
-            dt = now - lastTime
+        for TrajectoryFrequency in frequencies:
+            print(f"\n[Trajectory] Running at {TrajectoryFrequency:.1f} Hz")
+            duration = 3.0 / TrajectoryFrequency  # Run for 3 full cycles
+            start_time = time.time()
 
-            if dt >= 1 / freq:
-                lastTime = now
-                loop_counter += 1
-                dt_history.append(dt)
-     
-                # idx = np.searchsorted(t, time.time()-tik, side="left")
-                # Controller.updateTarget(np.array([ x[idx],y[idx] ]))
+            # Reset timing variables
+            lastTime = time.perf_counter()
+            tik = time.time()
+            loop_counter = 0
+            dt_history = []
 
-                Controller.updateTarget(np.array([
-                    30./1000. * math.cos(now * 2 * math.pi * 0.05),
-                    30./1000. * math.sin(now * 2 * math.pi * 0.05)
-                ]))
+            while time.time() - start_time < duration:
+                now = time.perf_counter()
+                dt = now - lastTime
 
-                # Controller.updateTarget(np.array([
-                #     30./1000.,
-                #     0./1000. 
-                # ]))
+                if dt >= 1 / freq:
+                    lastTime = now
+                    loop_counter += 1
+                    dt_history.append(dt)
+            
+                    idx = np.searchsorted(t, time.time() - tik, side="left")
 
-                setpoint = Controller.RetrieveControlInput()
-                communicator.set_data_to_send(setpoint)
-                
-                target, pose, pvals = Controller.getMetrics()
-                pose_x, pose_z = pose[0], pose[2]
-                target_x, target_z = target[0], target[1]
-                error_x = target_x - pose_x
-                error_z = target_z - pose_z
-                timestamp = time.time() - tik
+                    Controller.updateTarget(np.array([
+                        30.0 / 1000.0 * math.cos((time.time() - start_time) * 2 * math.pi * TrajectoryFrequency),
+                        30.0 / 1000.0 * math.sin((time.time() - start_time) * 2 * math.pi * TrajectoryFrequency)
+                    ]))
 
-                # Write to CSV
-                csv_writer.writerow([timestamp, pose_x, pose_z, target_x, target_z, error_x, error_z, *pvals])
-                log_file.flush()  # Ensure data is written immediately
+                    setpoint = Controller.RetrieveControlInput()
+                    communicator.set_data_to_send(setpoint)
+                    
+                    target, pose, pvals = Controller.getMetrics()
+                    pose_x, pose_z = pose[0], pose[2]
+                    target_x, target_z = target[0], target[1]
+                    error_x = target_x - pose_x
+                    error_z = target_z - pose_z
+                    timestamp = time.time() - tik
 
-                if loop_counter % 100 == 0:
-                    avg_dt = sum(dt_history) / len(dt_history)
-                    avg_freq = 1 / avg_dt if avg_dt > 0 else 0
-                    print(f"[Loop Stats] Avg freq: {avg_freq:.2f} Hz")
-            else:
-                time.sleep(0.0005)
+                    # Write to CSV
+                    csv_writer.writerow([timestamp, pose_x, pose_z, target_x, target_z, error_x, error_z, *pvals, TrajectoryFrequency])
+                    log_file.flush()  # Ensure data is written immediately
+
+                    if loop_counter % 100 == 0:
+                        avg_dt = sum(dt_history) / len(dt_history)
+                        avg_freq = 1 / avg_dt if avg_dt > 0 else 0
+                        print(f"[Loop Stats] Avg freq: {avg_freq:.2f} Hz")
+
+                else:
+                    time.sleep(0.0005)
 
     except KeyboardInterrupt:
         print("\n[Shutdown] KeyboardInterrupt received. Stopping controller and communicator...")
         Controller.stop()
         communicator.stop()
-        log_file.close()  # Close log file
+        log_file.close()
         print("[Shutdown] All threads successfully stopped.")
+
 
 threading.Thread(target=run_control_loop, daemon=True).start()
 
 win.show()
 QtWidgets.QApplication.instance().exec_()
-
 
 
 
