@@ -208,7 +208,7 @@ class ContinuumRobotController:
                 k= np.pi/BackboneLength
                 MaxR = (1/k) * (1 - np.cos(BackboneLength * k))
                 print(f"Warning: Could not find solution for curvature. Note that max radius from origin is r={MaxR}, while current radius is {r}")
-                curvature = None  # No root found in the interval
+                curvature = k_max  # No root found in the interval
 
         return phi, curvature
 
@@ -258,7 +258,7 @@ class ContinuumRobotController:
         # print(deltaL)
         # since M = Cross(F,d), M = J*(k*L+a*P) where k is muscle stiffness, L is muscle displacement vector, and a is the pressure sensitiviy, use bounded QP problem
         P = lsq_linear(J, (np.transpose(M)-np.matmul(NumMuscles*J, VertebraDiam* MuscleStiffness*deltaL))/(ForcePressureSensitivity*NumMuscles*VertebraDiam), bounds=(0, self.maxP))
-        print(np.transpose(M),-np.matmul(NumMuscles*J, VertebraDiam*MuscleStiffness*deltaL), np.transpose(M)-np.matmul(NumMuscles*J, MuscleStiffness*deltaL)/(VertebraDiam*ForcePressureSensitivity*NumMuscles))
+        # print(np.transpose(M),-np.matmul(NumMuscles*J, VertebraDiam*MuscleStiffness*deltaL), np.transpose(M)-np.matmul(NumMuscles*J, MuscleStiffness*deltaL)/(VertebraDiam*ForcePressureSensitivity*NumMuscles))
         
         return P.x
 
@@ -275,7 +275,7 @@ class ContinuumRobotController:
         CoreDiameter = 1/1000 #m
         BackboneLength = 175/1000 #m
         MuscleStiffness = 54.5035 #N/m
-        ForcePressureSensitivity =.015 #N/psi
+        ForcePressureSensitivity =.017 #N/psi
         MuscleRestLength=155/1000 #m
         VertebraDiam=20/1000 #m
 
@@ -306,7 +306,7 @@ class ContinuumRobotController:
             # PID for feedback, closing the loop on phi and curvatures
             u, error = pid.compute([phi, curvature], [phi_desired, curvature_desired], dt)
             
-            PIDGAIN= 0
+            PIDGAIN= 1
 
             # Use constant curvature and muscle model to find P with FF controller
             M = self.momentFromCurvature(curvature_desired + PIDGAIN*u[1], phi_desired+ PIDGAIN*u[0], YoungsModulus, CoreDiameter)
@@ -542,13 +542,13 @@ def run_control_loop():
                     loop_counter += 1
                     dt_history.append(dt)
             
-                    idx = np.searchsorted(t, time.time() - tik, side="left")
+                    # idx = np.searchsorted(t, time.time() - tik, side="left")
 
                     Controller.updateTarget(np.array([
                         30.0 / 1000.0 * math.cos((time.time() - start_time) * 2 * math.pi * TrajectoryFrequency),
                         30.0 / 1000.0 * math.sin((time.time() - start_time) * 2 * math.pi * TrajectoryFrequency)
                     ]))
-
+                    
                     setpoint = Controller.RetrieveControlInput()
                     communicator.set_data_to_send(setpoint)
                     
