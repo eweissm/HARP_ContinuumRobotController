@@ -32,7 +32,8 @@ This repository contains the full control stack for a soft continuum robot syste
 - Reads 3–9 pressure setpoints from serial (float values with sync byte `0xAA`)
 - Converts pressure values to PWM voltages to drive analog regulators
 - Reads actual pressures via analog sensors and sends back float values
-- Max pressure constrained to 35 psi
+- Max pressure constrained to my maxP variable
+
 
 ---
 
