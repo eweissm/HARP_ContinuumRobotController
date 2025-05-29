@@ -139,5 +139,3 @@ HARP_Robot_Controller/
 
 * For experimental dynamics, use BODE variants to assess frequency response.
 
-
-Feel free to submit issues or feature requests!
