@@ -130,7 +130,7 @@ HARP_Robot_Controller/
 │   └── ASUlogo.svg
 ├── RobotData/
 │   └── robot_log_*.csv
-
+```
 
 ## Notes
 * Live trajectory tracking uses SVG paths; modify or replace ASUlogo.svg as needed.
